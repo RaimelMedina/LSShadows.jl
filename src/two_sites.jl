@@ -97,6 +97,19 @@ function fusion_coefficient(q::Int, z::Int, ro::Int, bit_basis::UnitRange{Int64}
     return fusion_c
 end
 
+@doc raw"""
+    reconstruction_coefficient(WEσ::Vector{Float64}; d=2)
+
+Calculate the reconstruction coefficient for a given vector of entanglement
+features `WEσ`. 
+
+# Arguments
+- `WEσ`: Vector of entanglement features.
+- `d`: Optional argument with default value of 2, representing the dimension of the underlying quantum system.
+
+# Returns
+- Reconstruction coefficient as a vector of Float64.
+"""
 function reconstruction_coefficient(WEσ::Vector{Float64}; d=2)
     n = 2 * Int(log2(length(WEσ)))
     basis_n_half = qbasis(n ÷ 2)
@@ -116,6 +129,25 @@ function reconstruction_coefficient(WEσ::Vector{Float64}; d=2)
     return M \ b
 end
 
+@doc raw"""
+    partial_tr_embedding!(partial_tr::Array{ComplexF64, 2}, ψ0::ArrayReg, reg::Vector{Int64})
+
+Compute the reduced density matrix ``\rho_A`` of a given quantum state `ψ0` in the region `reg`. After that, it
+embeds the reduced density matrix back into the full hilbert space by constructing 
+
+```math 
+\rho_A \otimes \mathbb{I}/d_{\bar{A}}
+```
+The results are stored in a pre-allocated array `partial_tr`.
+
+# Arguments
+- `partial_tr`: Pre-allocated matrix to store the result.
+- `ψ0`: Quantum state as an ArrayReg.
+- `reg`: Vector of Int64 representing the qubits to keep.
+
+# Returns
+- None. The function updates the `partial_tr` matrix in-place.
+"""
 function partial_tr_embedding!(partial_tr::Array{ComplexF64, 2}, ψ0::ArrayReg, reg::Vector{Int64})
     n = nqubits(ψ0)
     if length(reg) == 0
@@ -130,6 +162,24 @@ function partial_tr_embedding!(partial_tr::Array{ComplexF64, 2}, ψ0::ArrayReg, 
     @assert tr(partial_tr) |> real ≈ 1.0
 end
 
+
+@doc raw"""
+    classical_snapshot!(M_inverse::Array{ComplexF64, 2}, partial_tr::Array{ComplexF64, 2}, reconst_coefficient::Vector{Float64}, ρ_unknown::ArrayReg; threaded=false)
+
+Construct the classical snapshot of an unknown quantum state `ρ_unknown`. For this, given the reconstruction coefficient it
+returns ``\sum_A r_A \sigma_A `` where `r_A` is the ``A``-th component of the reconstruction coefficient and 
+``\sigma_A`` is the embeded reduced density matrix of the state ``\sigma`` on region ``A``.  
+
+# Arguments
+- `M_inverse`: Pre-allocated matrix to store the result.
+- `partial_tr`: Pre-allocated matrix to store the partial trace embedding.
+- `reconst_coefficient`: Vector of Float64 representing the reconstruction coefficients.
+- `ρ_unknown`: Unknown quantum state as an `ArrayReg`.
+- `threaded`: Optional argument with default value of `false`, which determines if the function should be run in a multi-threaded mode.
+
+# Returns
+- None. The function updates the `M_inverse` matrix in-place.
+"""
 function classical_snapshot!(M_inverse::Array{ComplexF64, 2}, partial_tr::Array{ComplexF64, 2}, reconst_coefficient::Vector{Float64}, ρ_unknown::ArrayReg; threaded=false)
     n = nqubits(ρ_unknown)
     computational_basis = map(x -> bitarray(x, n ÷ 2), qbasis(n ÷ 2))
@@ -144,16 +194,16 @@ function classical_snapshot!(M_inverse::Array{ComplexF64, 2}, partial_tr::Array{
         M_inverse_lock = ReentrantLock()
 
         # Use mapreduce with multi-threading
-        @sync mapreduce(i -> begin
+        M_inverse .= @sync mapreduce(i -> begin
             local_partial_tr = deepcopy(partial_tr)  # Create a local copy of partial_tr for each thread
             partial_tr_embedding!(local_partial_tr, ρ_unknown, even_reg_set[i])
             result = reconst_coefficient[i] .* local_partial_tr
             lock(M_inverse_lock) do
                 M_inverse .+= result
             end
-        end, +, eachindex(even_reg_set), init=nothing)
+            result
+        end, +, eachindex(even_reg_set), init=zeros(ComplexF64, size(M_inverse)))
     else
-    
         M_inverse .= mapreduce(i -> begin
             partial_tr_embedding!(partial_tr, ρ_unknown, even_reg_set[i])
             reconst_coefficient[i] .* partial_tr
@@ -161,13 +211,26 @@ function classical_snapshot!(M_inverse::Array{ComplexF64, 2}, partial_tr::Array{
     end
 end
 
+"""
+    estimate_fidelity(rho::ArrayReg, rA::Vector{Float64}, ensemble::Vector; threaded=false)
+
+Estimate the fidelity between a given quantum state `rho` and an the reconstructed state.
+
+# Arguments
+- `rho`: Quantum state as an ArrayReg.
+- `rA`: Vector of Float64 representing the reconstruction coefficients.
+- `ensemble`: Vector of quantum states.
+- `threaded`: Optional argument with default value of `false`, which determines if the function should be run in a multi-threaded mode.
+
+# Returns
+- Fidelity estimate as a Float64.
+"""
 function estimate_fidelity(rho::ArrayReg, rA::Vector{Float64}, ensemble::Vector; threaded=false)
     n = nqubits(rho)
     samples = length(ensemble)
     
-    ρ_classical_shadow = zeros(ComplexF64, 2^n, 2^n)
-    partial_tr = similar(ρ_classical_shadow)
-    M_inverse = similar(ρ_classical_shadow)
+    partial_tr = zeros(ComplexF64, 2^n, 2^n)
+    M_inverse = similar(partial_tr)
     
     fid = mapreduce(i -> begin
         classical_snapshot!(M_inverse, partial_tr, rA, ensemble[i], threaded=threaded)
@@ -176,6 +239,22 @@ function estimate_fidelity(rho::ArrayReg, rA::Vector{Float64}, ensemble::Vector;
     
     return sqrt(fid / samples)
 end
+
+
+# function estimate_fidelity(rho::ArrayReg, rA::Vector{Float64}, ensemble::Vector; threaded=false)
+#     n = nqubits(rho)
+#     samples = length(ensemble)
+    
+#     partial_tr = zeros(ComplexF64, 2^n, 2^n)
+#     M_inverse = similar(partial_tr)
+    
+#     fid = mapreduce(i -> begin
+#         classical_snapshot!(M_inverse, partial_tr, rA, ensemble[i], threaded=threaded)
+#         (state(rho)' * M_inverse * state(rho))[1] |> real
+#     end, +, 1:samples, init=0.0)
+    
+#     return sqrt(fid / samples)
+# end
 
 # function estimate_fidelity(rho::ArrayReg, rA::Vector{Float64}, ensemble::Vector)
 #     fid = Float64(0)
