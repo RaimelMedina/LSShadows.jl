@@ -3,8 +3,7 @@ using BitBasis
 using Yao
 using Random
 using Statistics
-using JLD2
-using BenchmarkTools
+
 
 
 seed = 123
@@ -30,6 +29,4 @@ rA = reconstruction_coefficient(mean_entanglement_feature); # get reconstruction
 
 stateEnsembleMeasurement = generate_posterior_povm(Val(:RandomParams), u, ψunknown , samp, rng); #Generates the posterior POVM
 
-@btime estimate_fidelity(ψunknown, rA, stateEnsembleMeasurement)
-
-@btime estimate_fidelity(ψunknown, rA, stateEnsembleMeasurement, threaded=true)
+estimate_fidelity(ψunknown, rA, stateEnsembleMeasurement)

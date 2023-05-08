@@ -24,4 +24,11 @@ include("unitary_ensembles.jl")
 include("entanglement_feature.jl")
 
 include("two_sites.jl")
+
+@const_gate ZZ = mat(kron(Z,Z))
+@const_gate YY = mat(kron(Y,Y))
+@const_gate XX = mat(kron(X,X))
+
+export ZZ, YY, XX
+
 end
